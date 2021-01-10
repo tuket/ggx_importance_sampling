@@ -40,7 +40,6 @@ uniform vec3 u_camPos;
 uniform vec3 u_albedo;
 uniform float u_rough2;
 uniform float u_metallic;
-uniform vec3 u_F0;
 uniform samplerCube u_convolutedEnv;
 uniform sampler2D u_lut;
 uniform uint u_numSamples = 16u;
@@ -127,7 +126,7 @@ vec3 importanceSampleGgxVD(vec2 seed, float rough2, vec3 N, vec3 V)
 {
     mat3 orthoBasis; // build an ortho normal basis with N as the up direction
     orthoBasis[1] = N;
-    orthoBasis[0] = abs(dot(N, vec3(0, 0, 1))) < 0.01 ?
+    orthoBasis[0] = abs(dot(N, vec3(0, 0, 1))) < 0.001 ?
                         cross(N, vec3(1, 0, 0)) :
                         cross(N, vec3(0, 0, 1));
     orthoBasis[0] = normalize(orthoBasis[0]);
@@ -180,9 +179,10 @@ void calcLighting()
     vec3 k_spec = F;
     vec3 k_diff = (1 - k_spec) * (1 - u_metallic);
 
+    vec3 diffuse = vec3(0, 0, 0);
     // uniform sampling
     {
-        vec3 color = vec3(0.0, 0.0, 0.0);
+        vec3 specular = vec3(0.0, 0.0, 0.0);
         for(uint iSample = 0u; iSample < u_numSamples; iSample++)
         {
             uint sampleId = iSample + u_numSamples * u_numFramesWithoutChanging;
@@ -200,10 +200,12 @@ void calcLighting()
             float D = rough4 / (PI * q*q);
             float G = ggx_G_smith(NoV, NoL, u_rough2);
             vec3 fr = F * G * D / (4 * NoV * NoL);
-            vec3 diffuse = k_diff * u_albedo / PI;
-            color += (diffuse + fr) * env * NoL;
+            diffuse += k_diff * u_albedo * NoL;
+            specular += env * fr * NoL;
         }
-        color *= 2*PI / float(u_numSamples);
+        diffuse /= float(u_numSamples);
+        specular /= float(u_numSamples);
+        vec3 color = diffuse + 2*PI * specular;
         o_uniform = vec4(color, 1);
     }
     // importance sampling NDF
@@ -226,7 +228,7 @@ void calcLighting()
             }
         }
         specular /= float(u_numSamples);
-        o_importanceNDF = vec4(specular, 1);
+        o_importanceNDF = vec4(diffuse + specular, 1);
     }
     // importance sampling VNDF
     {
@@ -247,7 +249,7 @@ void calcLighting()
             }
         }
         specular /= float(u_numSamples);
-        o_importanceVNDF = vec4(specular, 1);
+        o_importanceVNDF = vec4(diffuse + specular, 1);
     }
 }
 
@@ -287,17 +289,19 @@ static u32 s_objVao, s_objVbo, s_objEbo, s_objNumInds;
 static u32 s_splatProg, s_envProg, s_rtProg;
 static struct { i32 tex; } s_splatUnifLocs;
 static struct { i32 modelViewProj, cubemap, gammaExp; } s_envShadUnifLocs;
-struct CommonUnifLocs { i32 camPos, model, modelViewProj, albedo, rough2, metallic, F0, convolutedEnv, lut; };
+struct CommonUnifLocs { i32 camPos, model, modelViewProj, albedo, rough2, metallic, convolutedEnv, lut; };
 static struct : public CommonUnifLocs {
     i32 numSamples, numFramesWithoutChanging;
 } s_rtUnifLocs;
 
 static int s_samplingMode[2] = {0, 1}; // 0: uniform sampling, 1: importance sampling NDF, 2: importance sampling VNDF
 static float s_rough = 0.1f;
-static u32 s_numSamplesPerFrame = 64;
+static u32 s_numSamplesPerFrame = 40;
 static u32 s_numFramesWithoutChanging = 0; // the number of frames we have been drawing the exact same thing, we use this to compute the blenfing factor inorder to apply temporal antialiasing
 static glm::vec3 s_albedo = {0.8f, 0.8f, 0.8f};
 static float s_metallic = 0.99f;
+
+// --- CODE ---
 
 static void drawGui()
 {
@@ -646,7 +650,6 @@ int main()
                 glGetUniformLocation(s_rtProg, "u_albedo"),
                 glGetUniformLocation(s_rtProg, "u_rough2"),
                 glGetUniformLocation(s_rtProg, "u_metallic"),
-                glGetUniformLocation(s_rtProg, "u_F0"),
                 glGetUniformLocation(s_rtProg, "u_convolutedEnv"),
                 glGetUniformLocation(s_rtProg, "u_lut"),
             };
@@ -706,8 +709,6 @@ int main()
             glUniform3fv(s_rtUnifLocs.albedo, 1, &s_albedo[0]);
             glUniform1f(s_rtUnifLocs.rough2, s_rough*s_rough);
             glUniform1f(s_rtUnifLocs.metallic, s_metallic);
-            const glm::vec3 ironF0(0.56f, 0.57f, 0.58f);
-            glUniform3fv(s_rtUnifLocs.F0, 1, &ironF0[0]);
             glUniform1i(s_rtUnifLocs.convolutedEnv, 1);
             glUniform1ui(s_rtUnifLocs.numSamples, s_numSamplesPerFrame);
             glUniform1ui(s_rtUnifLocs.numFramesWithoutChanging, s_numFramesWithoutChanging);
