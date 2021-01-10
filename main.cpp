@@ -200,13 +200,12 @@ void calcLighting()
             float D = rough4 / (PI * q*q);
             float G = ggx_G_smith(NoV, NoL, u_rough2);
             vec3 fr = F * G * D / (4 * NoV * NoL);
-            diffuse += k_diff * u_albedo * NoL;
+            diffuse += env * NoL;
             specular += env * fr * NoL;
         }
-        diffuse /= float(u_numSamples);
-        specular /= float(u_numSamples);
-        vec3 color = diffuse + 2*PI * specular;
-        o_uniform = vec4(color, 1);
+        diffuse *= 2 * k_diff * u_albedo / float(u_numSamples);
+        specular *= 2 * PI / float(u_numSamples);
+        o_uniform = vec4(diffuse + specular, 1);
     }
     // importance sampling NDF
     {
@@ -377,7 +376,7 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    s_window = glfwCreateWindow(800, 600, "test ggx", nullptr, nullptr);
+    s_window = glfwCreateWindow(1000, 800, "test ggx", nullptr, nullptr);
     if (s_window == nullptr) {
         fprintf(stderr, "error creating the window\n");
         return 2;
