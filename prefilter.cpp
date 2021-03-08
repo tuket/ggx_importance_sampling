@@ -20,7 +20,7 @@ layout (location = 0) out vec4 o_color;
 in vec2 v_pos;
 
 uniform float u_rough2;
-uniform uint u_numSamples;
+uniform uint u_numSamples = 1024u;
 uniform samplerCube u_envTex;
 uniform float u_resolution; // resolution in each face of u_envTex
 uniform mat3 u_rayBasis; // the basis frame for making rays
@@ -180,6 +180,7 @@ int main(int argc, char** argv)
 
     // init shader
     u32 prog = makeProgram(k_vertShadSrc, k_fragShadSrc);
+    glUseProgram(prog);
     struct Locs {
         i32 rough2;
         i32 numSamples;
@@ -195,7 +196,8 @@ int main(int argc, char** argv)
         glGetUniformLocation(prog, "u_rayBasis"),
     };
 
-    for(int i = 0; i < 10; i++)
+    const int numLevels = 10;
+    for(int i = 0; i < numLevels; i++)
     {
         const int outW = img.width() / (1 << i);
         const int outH = img.height() / (1 << i);
@@ -210,6 +212,14 @@ int main(int argc, char** argv)
         }
         defer(glDeleteTextures(1, &outTexture));
 
-        
+
+        for(int face = 0; face < 6; face++)
+        {
+            glUniform1f(locs.rough2, float(i) / (numLevels-1));
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        }
+
+
+        // save image!
     }
 }
