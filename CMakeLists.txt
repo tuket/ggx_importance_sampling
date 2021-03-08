@@ -28,15 +28,10 @@ add_subdirectory(libs/glm)
 add_subdirectory(libs/tl)
 add_subdirectory(libs/tg)
 
-set(SOURCES
+add_executable(test_ggx
     main.cpp
     utils.hpp
 )
-
-add_executable(test_ggx
-    ${SOURCES}
-)
-
 target_link_libraries(test_ggx glad)
 target_link_libraries(test_ggx glfw)
 target_link_libraries(test_ggx imgui)
@@ -44,3 +39,16 @@ target_link_libraries(test_ggx stb)
 target_link_libraries(test_ggx glm)
 target_link_libraries(test_ggx tl)
 target_link_libraries(test_ggx tg)
+
+add_executable(prefilter
+    prefilter.cpp
+    utils.hpp
+)
+target_link_libraries(prefilter glad)
+target_link_libraries(prefilter glfw)
+target_link_libraries(prefilter imgui)
+target_link_libraries(prefilter stb)
+target_link_libraries(prefilter glm)
+target_link_libraries(prefilter tl)
+target_link_libraries(prefilter tg)
+

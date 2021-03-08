@@ -40,7 +40,7 @@ uniform vec3 u_camPos;
 uniform vec3 u_albedo;
 uniform float u_rough2;
 uniform float u_metallic;
-uniform samplerCube u_convolutedEnv;
+uniform samplerCube u_envTex;
 uniform sampler2D u_lut;
 uniform uint u_numSamples = 16u;
 uniform uint u_numFramesWithoutChanging;
@@ -190,7 +190,7 @@ void calcLighting()
             vec2 seed2 = vec2(makeFloat01(seedUInt.x), makeFloat01(seedUInt.y));
             vec3 L = uniformSample(seed2, N);
             vec3 H = normalize(V + L);
-            vec3 env = textureLod(u_convolutedEnv, L, 0.0).rgb;
+            vec3 env = textureLod(u_envTex, L, 0.0).rgb;
 
             float NoL = max(0.0001, dot(N, L));
             float NoH = max(0.0001, dot(N, H));
@@ -219,7 +219,7 @@ void calcLighting()
             vec3 H = importanceSampleGgxD(seed2, u_rough2, N);
             vec3 L = reflect(-V, H);
             if(dot(N, L) > 0) {
-                vec3 env = textureLod(u_convolutedEnv, L, 0.0).rgb;
+                vec3 env = textureLod(u_envTex, L, 0.0).rgb;
                 float NoL = max(0.0001, dot(N, L));
                 float NoH = max(0.0001, dot(N, H));
                 float G = ggx_G_smith(NoV, NoL, u_rough2);
@@ -241,7 +241,7 @@ void calcLighting()
             vec3 H = importanceSampleGgxVD(seed2, u_rough2, N, V);
             vec3 L = reflect(-V, H);
             if(dot(N, L) > 0) {
-                vec3 env = textureLod(u_convolutedEnv, L, 0.0).rgb;
+                vec3 env = textureLod(u_envTex, L, 0.0).rgb;
                 float NoL = max(0.0001, dot(N, L));
                 float NoH = max(0.0001, dot(N, H));
                 specular += env * F * ggx_G(NoL, u_rough2);
@@ -649,7 +649,7 @@ int main()
                 glGetUniformLocation(s_rtProg, "u_albedo"),
                 glGetUniformLocation(s_rtProg, "u_rough2"),
                 glGetUniformLocation(s_rtProg, "u_metallic"),
-                glGetUniformLocation(s_rtProg, "u_convolutedEnv"),
+                glGetUniformLocation(s_rtProg, "u_envTex"),
                 glGetUniformLocation(s_rtProg, "u_lut"),
             };
             s_rtUnifLocs.numSamples = glGetUniformLocation(s_rtProg, "u_numSamples");
