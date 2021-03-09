@@ -21,5 +21,5 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${PROJECT_SOURCE_DIR})
 target_link_libraries(imgui
 	glad
-	SDL2 SDL2main
+	glfw
 )
