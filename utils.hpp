@@ -259,27 +259,28 @@ static void printShader(const char** srcs, int numSrcs)
     }
 }
 
-static u32 makeShader(const char* src, u32 type)
+static u32 makeShader(tl::Span<const char*> srcs, u32 type)
 {
-    const char* srcs[2];
-    srcs[0] = k_headerShadSrc;
-    srcs[1] = src;
+    const char* hsrcs[32];
+    hsrcs[0] = k_headerShadSrc;
+    for(int i = 0; i < srcs.size(); i++)
+        hsrcs[i+1] = srcs[i];
     const u32 shader = glCreateShader(type);
-    glShaderSource(shader, 2, srcs, nullptr);
+    glShaderSource(shader, srcs.size()+1, hsrcs, nullptr);
     glCompileShader(shader);
     i32 ok;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if(!ok) {
         glGetShaderInfoLog(shader, BUFFER_SIZE, nullptr, g_buffer);
         printf("%s\n", g_buffer);
-        printShader(srcs, 2);
+        printShader(hsrcs, srcs.size()+1);
         glDeleteShader(shader);
         return 0;
     }
     return shader;
 }
 
-static u32 makeProgram(const char* vertSrc, const char* fragSrc)
+static u32 makeProgram(tl::Span<const char*> vertSrc, tl::Span<const char*> fragSrc)
 {
     const u32 vertShad = makeShader(vertSrc, GL_VERTEX_SHADER);
     if(vertShad == 0)
@@ -310,7 +311,7 @@ static u32 makeProgram(const char* vertSrc, const char* fragSrc)
     return prog;
 }
 
-static u32 makeProgram(u32 vertShad, const char* fragSrc)
+static u32 makeProgram(u32 vertShad, tl::Span<const char*> fragSrc)
 {
     const u32 fragShad = makeShader(fragSrc, GL_FRAGMENT_SHADER);
     if(fragShad == 0)

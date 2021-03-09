@@ -1,5 +1,6 @@
 #include "utils.hpp"
 #include <tg/img.hpp>
+#include <stb/stb_image_write.h>
 
 static const char* k_vertShadSrc =
 R"GLSL(
@@ -13,17 +14,10 @@ void main()
 }
 )GLSL";
 
-static const char* k_fragShadSrc =
+static const char* k_fragShadCommonSrc =
 R"GLSL(
-layout (location = 0) out vec4 o_color;
-
-in vec2 v_pos;
-
 uniform float u_rough2;
-uniform uint u_numSamples = 1024u;
-uniform samplerCube u_envTex;
-uniform float u_resolution; // resolution in each face of u_envTex
-uniform mat3 u_rayBasis; // the basis frame for making rays
+uniform uint u_numSamples = 10u*1024u;
 
 float DistributionGGX(vec3 N, vec3 H)
 {
@@ -37,7 +31,6 @@ float DistributionGGX(vec3 N, vec3 H)
 
     return nom / denom;
 }
-
 float RadicalInverse_VdC(uint bits) 
 {
      bits = (bits << 16u) | (bits >> 16u);
@@ -74,10 +67,86 @@ vec3 ImportanceSampleGGX(vec2 rand, vec3 N)
     vec3 sampleVec = tangent * H.x + bitangent * H.y + N * H.z;
     return normalize(sampleVec);
 }
+)GLSL";
+
+static const char* k_cubemapShadSrc =
+R"GLSL(
+layout (location = 0) out vec4 o_color;
+
+in vec2 v_pos;
+
+uniform float u_resolution; // resolution in each face of u_envTex
+uniform mat3 u_rayBasis; // the basis frame for making rays
+uniform samplerCube u_envTex;
 
 void main()
 {
     vec3 N = u_rayBasis * vec3(v_pos, 1);
+    N = normalize(N);
+
+    vec3 color = vec3(0.0);
+    float w = 0.0;
+    
+    for(uint i = 0u; i < u_numSamples; ++i)
+    {
+        vec2 rand = Hammersley(i, u_numSamples);
+        vec3 H = ImportanceSampleGGX(rand, N);
+        float NdotH = max(dot(N, H), 0.0);
+        vec3 L  = normalize(2.0 * NdotH * H - N);
+
+        float NdotL = max(dot(N, L), 0.0);
+        if(NdotL > 0.0)
+        {
+            float D = DistributionGGX(N, H);
+            float pdf = 0.25 * D; 
+
+            float saTexel  = 4.0 * PI / (6.0 * u_resolution * u_resolution); // Solid Angle Texel (4*PI: whole sphere radians, 6*w*w: num pixels in the whole cubemap)
+            float saSample = 1.0 / (float(u_numSamples) * pdf + 0.0001); // Solid Angle Sample
+
+            float mipLevel = u_rough2 == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel); 
+            
+            color += textureLod(u_envTex, L, mipLevel).rgb * NdotL;
+            w += NdotL;
+        }
+    }
+
+    color = color / w;
+    o_color = vec4(color, 1.0);
+}
+)GLSL";
+
+static const char* k_latlongShadSrc =
+R"GLSL(
+layout (location = 0) out vec4 o_color;
+
+in vec2 v_pos;
+
+uniform float u_resolution; // width*height is of the mip 0
+uniform sampler2D u_envTex;
+
+vec2 dirToLatlongTc(vec3 v)
+{
+    return 0.5 + 0.5 * vec2(
+        -atan(v.x, -v.z) / PI,
+        asin(v.y) / (0.5*PI)
+    );
+}
+vec3 latlongPosToDir(vec2 tc)
+{
+    float phi = tc.x * PI;
+    float theta = 0.5*PI*tc.y;
+    float l = cos(theta);
+    return vec3(
+        -sin(phi) * l,
+        sin(theta),
+        -cos(phi) * l
+    );
+}
+
+void main()
+{
+    vec3 N = latlongPosToDir(v_pos);
+    N = normalize(N);
 
     vec3 color = vec3(0.0);
     float w = 0.0;
@@ -95,12 +164,13 @@ void main()
             float D = DistributionGGX(N, H);
             float pdf = D * NdotH / (4.0 * NdotH) + 0.0001; 
 
-            float saTexel  = 4.0 * PI / (6.0 * u_resolution * u_resolution);
+            float saTexel  = 4.0 * PI / u_resolution;
             float saSample = 1.0 / (float(u_numSamples) * pdf + 0.0001);
 
             float mipLevel = u_rough2 == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel); 
             
-            color += textureLod(u_envTex, L, mipLevel).rgb * NdotL;
+            vec2 L2 = dirToLatlongTc(L);
+            color += textureLod(u_envTex, L2, mipLevel).rgb * NdotL;
             w += NdotL;
         }
     }
@@ -109,6 +179,202 @@ void main()
     o_color = vec4(color, 1.0);
 }
 )GLSL";
+
+// picture: http://www.reindelsoftware.com/Documents/Mapping/drawings/cubemap_uvxy.gif
+const glm::mat3 rayBases[] = {
+    glm::mat3({+1, 0, 0}, {0, +1, 0}, {0, 0, -1}), // front
+    glm::mat3({0, 0, -1}, {0, +1, 0}, {-1, 0, 0}), // left
+    glm::mat3({0, 0, +1}, {0, +1, 0}, {+1, 0, 0}), // left
+    glm::mat3({-1, 0, 0}, {0, +1, 0}, {0, 0, +1}), // back
+    glm::mat3({+1, 0, 0}, {0, 0, -1}, {0, -1, 0}), // down
+    glm::mat3({+1, 0, 0}, {0, 0, +1}, {0, +1, 0}), // up
+};
+const glm::ivec2 fboOffsets[] = {
+    {1, 1}, // front
+    {0, 1}, // left
+    {2, 1}, // right
+    {3, 1}, // back
+    {1, 0}, // down
+    {1, 2}, // up
+};
+u32 fbo;
+
+int prefilterCubemap(const char* fileName, const char* outFilePrefix)
+{
+	// init envmap texture
+	u32 envmapTex;
+	glGenTextures(1, &envmapTex);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, envmapTex);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	tg::Img3f img(tg::Img3f::load(fileName));
+	if (img.data() == nullptr) {
+		printf("error loading image file %s. The working dir must be the data/ folder \n", fileName);
+		return 5;
+	}
+	uploadCubemapTexture(0, img.width(), img.height(), GL_RGB32F, GL_RGB, GL_FLOAT, (u8*)img.data());
+	glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+
+	// init shader
+	const char* fragSrcs[2] = {k_fragShadCommonSrc, k_cubemapShadSrc};
+	const u32 prog = makeProgram({&k_vertShadSrc, 1}, fragSrcs);
+	glUseProgram(prog);
+    if (prog == 0)
+        return 6;
+	struct Locs {
+		i32 rough2;
+		i32 numSamples;
+		i32 envTex;
+		i32 resolution; // resolution in each face of u_envTex
+		i32 rayBasis; // the basis frame for making rays
+	};
+	const Locs locs = {
+		glGetUniformLocation(prog, "u_rough2"),
+		glGetUniformLocation(prog, "u_numSamples"),
+		glGetUniformLocation(prog, "u_envTex"),
+		glGetUniformLocation(prog, "u_resolution"),
+		glGetUniformLocation(prog, "u_rayBasis"),
+	};
+
+	int faceSize = img.width() / 4;
+	int numLevels = 0;
+	while (faceSize) {
+		numLevels++;
+		faceSize >>= 1;
+	}
+	faceSize = img.width() / 4;
+	float* outPixels = new float[3 * 4 * faceSize * 3 * faceSize];
+	u32 outTexture;
+	glGenTextures(1, &outTexture);
+	defer(glDeleteTextures(1, &outTexture));
+
+	for (int i = 0; i < numLevels; i++)
+	{
+		glBindTexture(GL_TEXTURE_2D, outTexture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4 * faceSize, 3 * faceSize, 0, GL_RGBA, GL_FLOAT, nullptr);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outTexture, 0);
+		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+			printf("The framebuffer is not complete\n");
+			return 4;
+		}
+		const float rough = float(i) / (numLevels - 1);
+		const float rough2 = rough * rough;
+		glUniform1f(locs.rough2, rough2);
+		glUniform1i(locs.envTex, 0);
+		glBindTexture(GL_TEXTURE_CUBE_MAP, envmapTex);
+		glUniform1f(locs.resolution, float(faceSize));
+
+		for (int face = 0; face < 6; face++) {
+			glUniformMatrix3fv(locs.rayBasis, 1, GL_FALSE, &rayBases[face][0][0]);
+			const int tx0 = faceSize * fboOffsets[face].x;
+			const int ty0 = faceSize * fboOffsets[face].y;
+			glViewport(tx0, ty0, faceSize, faceSize);
+			glScissor(tx0, ty0, faceSize, faceSize);
+			glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+		}
+
+		// save image!
+		glFinish();
+		glBindTexture(GL_TEXTURE_2D, outTexture);
+		glReadPixels(0, 0, 4 * faceSize, 3 * faceSize, GL_RGB, GL_FLOAT, outPixels);
+        char outFileName[128];
+        tl::toStringBuffer(outFileName, outFilePrefix, i, ".hdr");
+		stbi_write_hdr(outFileName, 4*faceSize, 3*faceSize, 3, outPixels);
+
+		faceSize >>= 1;
+	}
+
+    return 0;
+}
+
+int prefilterLatlong(const char* fileName, const char* outFilePrefix)
+{
+	// init envmap texture
+	u32 envmapTex;
+	glGenTextures(1, &envmapTex);
+	glBindTexture(GL_TEXTURE_2D, envmapTex);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	tg::Img3f img(tg::Img3f::load(fileName));
+	if (img.data() == nullptr) {
+		printf("error loading image file %s. The working dir must be the data/ folder \n", fileName);
+		return 5;
+	}
+	const int W = img.width();
+	const int H = img.height();
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, W, H, 0, GL_RGB, GL_FLOAT, (u8*)img.data());
+	glGenerateMipmap(GL_TEXTURE_2D);
+
+    const char* fragSrcs[2] = {k_fragShadCommonSrc, k_latlongShadSrc};
+	const u32 prog = makeProgram({&k_vertShadSrc, 1}, fragSrcs);
+	glUseProgram(prog);
+    if (prog == 0)
+        return 6;
+	struct Locs {
+		i32 rough2;
+		i32 numSamples;
+		i32 envTex;
+		i32 resolution; // width*height
+	};
+	const Locs locs = {
+		glGetUniformLocation(prog, "u_rough2"),
+		glGetUniformLocation(prog, "u_numSamples"),
+		glGetUniformLocation(prog, "u_envTex"),
+		glGetUniformLocation(prog, "u_resolution"),
+	};
+
+	float* outPixels = new float[3 * W*H];
+    int w = W;
+    int h = H;
+	int numLevels = 0;
+	while (h > 2) {
+		numLevels++;
+        h >>= 1;
+	}
+    h = H;
+	u32 outTexture;
+	glGenTextures(1, &outTexture);
+	defer(glDeleteTextures(1, &outTexture));
+
+	for (int i = 0; i < numLevels; i++)
+	{
+		glBindTexture(GL_TEXTURE_2D, outTexture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outTexture, 0);
+		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+			printf("The framebuffer is not complete\n");
+			return 4;
+		}
+
+		const float rough = float(i) / (numLevels - 1);
+		const float rough2 = rough * rough;
+		glUniform1f(locs.rough2, rough2);
+		glUniform1i(locs.envTex, 0);
+		glBindTexture(GL_TEXTURE_2D, envmapTex);
+		glUniform1f(locs.resolution, float(W*H));
+		glViewport(0, 0, w, h);
+		glScissor(0, 0, w, h);
+		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+		// save image!
+		glFinish();
+		glBindTexture(GL_TEXTURE_2D, outTexture);
+		glReadPixels(0, 0, w, h, GL_RGB, GL_FLOAT, outPixels);
+		char outFileName[128];
+		tl::toStringBuffer(outFileName, outFilePrefix, i, ".hdr");
+		stbi_write_hdr(outFileName, w, h, 3, outPixels);
+
+		w >>= 1;
+        h >>= 1;
+	}
+
+	return 0;
+}
 
 int main(int argc, char** argv)
 {
@@ -124,7 +390,7 @@ int main(int argc, char** argv)
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(1000, 800, "test ggx", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(4, 4, "prefiltering...", nullptr, nullptr);
     if (window == nullptr) {
         fprintf(stderr, "error creating the window\n");
         return 2;
@@ -140,26 +406,7 @@ int main(int argc, char** argv)
 
     glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
 
-    // init envmap texture
-    u32 envmapTex;
-    glGenTextures(1, &envmapTex);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, envmapTex);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    static const char* imgPath = "autumn_cube.hdr";
-    tg::Img3f img(tg::Img3f::load(imgPath));
-    if(img.data() == nullptr) {
-        printf("error loading image file %s. The working dir must be the data/ folder \n", imgPath);
-        return 5;
-    }
-    uploadCubemapTexture(0, img.width(), img.height(), GL_RGB16, GL_RGB, GL_FLOAT, (u8*)img.data());
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-
     // init FBO
-    u32 fbo;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     GLenum fboDrawBuffers[] = {GL_COLOR_ATTACHMENT0};
@@ -178,48 +425,8 @@ int main(int argc, char** argv)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    // init shader
-    u32 prog = makeProgram(k_vertShadSrc, k_fragShadSrc);
-    glUseProgram(prog);
-    struct Locs {
-        i32 rough2;
-        i32 numSamples;
-        i32 envTex;
-        i32 resolution; // resolution in each face of u_envTex
-        i32 rayBasis; // the basis frame for making rays
-    };
-    const Locs locs = {
-        glGetUniformLocation(prog, "u_rough2"),
-        glGetUniformLocation(prog, "u_numSamples"),
-        glGetUniformLocation(prog, "u_envTex"),
-        glGetUniformLocation(prog, "u_resolution"),
-        glGetUniformLocation(prog, "u_rayBasis"),
-    };
-
-    const int numLevels = 10;
-    for(int i = 0; i < numLevels; i++)
-    {
-        const int outW = img.width() / (1 << i);
-        const int outH = img.height() / (1 << i);
-        u32 outTexture;
-        glGenTextures(1, &outTexture);
-        glBindTexture(GL_TEXTURE_2D, outTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, outW, outW, 0, GL_RGBA, GL_FLOAT, nullptr);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, outTexture, 0);
-        if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            printf("The framebuffer is not camplete\n");
-            return 4;
-        }
-        defer(glDeleteTextures(1, &outTexture));
-
-
-        for(int face = 0; face < 6; face++)
-        {
-            glUniform1f(locs.rough2, float(i) / (numLevels-1));
-            glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-        }
-
-
-        // save image!
-    }
+    if (1)
+        prefilterCubemap("autumn_cube.hdr", "autumn_cube_");
+    else
+        prefilterLatlong("estadio.hdr", "estadio_");
 }
